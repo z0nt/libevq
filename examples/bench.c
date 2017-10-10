@@ -33,7 +33,9 @@
  *
  */
 
+#ifndef WITH_LIBEVQ
 #include "event2/event-config.h"
+#endif
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -61,13 +63,36 @@
 #include <getopt.h>
 #endif
 
+#ifdef WITH_LIBEVQ
+#include "evq.h"
+#else
 #include <event.h>
 #include <evutil.h>
+#endif
+
+#ifdef WITH_LIBEVQ
+#define HAVE_SETRLIMIT
+
+#include <sys/time.h>
+#include <unistd.h>
+
+#define evutil_socket_t		int
+#define ev_intptr_t		intptr_t
+#define ev_ssize_t		ssize_t
+#define evutil_gettimeofday	gettimeofday
+#define evutil_socketpair	socketpair
+#define evutil_timersub		timersub
+#endif
 
 static int count, writes, fired, failures;
 static evutil_socket_t *pipes;
 static int num_pipes, num_active, num_writes;
+#ifdef WITH_LIBEVQ
+static evq_t evq;
+static int once;
+#else
 static struct event *events;
+#endif
 
 
 static void
@@ -101,13 +126,23 @@ run_once(void)
 	static struct timeval ts, te;
 
 	for (cp = pipes, i = 0; i < num_pipes; i++, cp += 2) {
+#ifdef WITH_LIBEVQ
+		if (once)
+			evq_del(evq, cp[0], cp);
+		evq_add_read(evq, cp[0], cp);
+#else
 		if (event_initialized(&events[i]))
 			event_del(&events[i]);
 		event_set(&events[i], cp[0], EV_READ | EV_PERSIST, read_cb, (void *)(ev_intptr_t) i);
 		event_add(&events[i], NULL);
+#endif
 	}
 
+#ifdef WITH_LIBEVQ
+	once = 1;
+#else
 	event_loop(EVLOOP_ONCE | EVLOOP_NONBLOCK);
+#endif
 
 	fired = 0;
 	space = num_pipes / num_active;
@@ -120,7 +155,13 @@ run_once(void)
 	{ int xcount = 0;
 	evutil_gettimeofday(&ts, NULL);
 	do {
+#ifdef WITH_LIBEVQ
+		while ((cp = evq_next(evq)) == NULL)
+			evq_wait(evq, 0);
+		read_cb(cp[0], 0, (void *)(cp - pipes));
+#else
 		event_loop(EVLOOP_ONCE | EVLOOP_NONBLOCK);
+#endif
 		xcount++;
 	} while (count != fired);
 	evutil_gettimeofday(&te, NULL);
@@ -175,14 +216,28 @@ main(int argc, char **argv)
 	}
 #endif
 
+#ifndef WITH_LIBEVQ
 	events = calloc(num_pipes, sizeof(struct event));
+	if (events == NULL) {
+		perror("malloc");
+		exit(1);
+	}
+#endif
 	pipes = calloc(num_pipes * 2, sizeof(evutil_socket_t));
-	if (events == NULL || pipes == NULL) {
+	if (pipes == NULL) {
 		perror("malloc");
 		exit(1);
 	}
 
+#ifdef WITH_LIBEVQ
+	evq = evq_create(num_pipes);
+	if (evq == NULL) {
+		perror("evq_create");
+		exit(1);
+	}
+#else
 	event_init();
+#endif
 
 	for (cp = pipes, i = 0; i < num_pipes; i++, cp += 2) {
 #ifdef USE_PIPES
