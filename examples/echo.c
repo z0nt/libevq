@@ -138,11 +138,38 @@ sig_quit(int sig)
 {
 }
 
-int
-main(void)
+static void
+usage(void)
 {
-	int fd, done;
+
+	errx(1, "usage: echo [-a address] [-p port]");
+}
+
+int
+main(int argc, char *argv[])
+{
+	int ch, fd, done;
+	char *address = "0.0.0.0";
+	unsigned long port = 55555;
 	struct state server_state, *state;
+
+	while ((ch = getopt(argc, argv, "a:p:")) != -1) {
+		switch (ch) {
+		case 'a':
+			address = optarg;
+			break;
+		case 'p':
+			port = strtoul(optarg, NULL, 10);
+			break;
+		default:
+			usage();
+		}
+	}
+
+	if (argc != optind)
+		usage();
+	if (port == 0 || port > 65535)
+		errx(1, "port must be in range [1..65535]");
 
 	signal(SIGQUIT, sig_quit);
 	signal(SIGPIPE, SIG_IGN);
@@ -151,9 +178,9 @@ main(void)
 	if (evq == NULL)
 		err(1, "evq_create failed");
 
-	fd = sock_listen("127.0.0.1", 55555);
+	fd = sock_listen(address, port);
 	if (fd == -1)
-		err(1, "sock_listen failed");
+		errx(1, "sock_listen failed");
 
 	server_state.handler = acceptor;
 	server_state.fd = fd;
